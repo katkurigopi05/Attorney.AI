@@ -1,0 +1,64 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+*.pyc
+*.pyo
+
+# ── Environment & Secrets ─────────────────────────────────────────────────
+.env
+.env.local
+.env.production
+*.env
+
+# ── Data & Models (too large for GitHub) ─────────────────────────────────
+data/
+models/
+*.pkl
+*.bin
+*.pt
+*.ckpt
+*.safetensors
+*.h5
+
+# ── Qdrant local storage ──────────────────────────────────────────────────
+qdrant_storage/
+qdrant_data/
+
+# ── HuggingFace cache ─────────────────────────────────────────────────────
+.cache/
+~/.cache/huggingface/
+
+# ── Logs ─────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Frontend build ─────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+node_modules/
+
+# ── IDE / OS ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── Testing ───────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/

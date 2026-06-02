@@ -1,0 +1,27 @@
+{
+  "name": "attorney-ai-frontend",
+  "version": "0.1.0",
+  "description": "Attorney.AI — Citation-first legal research assistant frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.23.1",
+    "react-dropzone": "^14.2.3",
+    "react-markdown": "^9.0.1",
+    "remark-gfm": "^4.0.0",
+    "lucide-react": "^0.400.0",
+    "framer-motion": "^11.2.12",
+    "axios": "^1.7.2"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.3.1"
+  }
+}
