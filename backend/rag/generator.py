@@ -1,15 +1,14 @@
 """
-Attorney.AI — Citation-Grounded Answer Generator
-Generates answers that ONLY use information from retrieved legal sources.
-Every factual claim must be traceable to a citation.
+Attorney.AI — Answer Generator (Ollama / OpenAI via unified client)
+Citation-grounded answers using the local Ollama LLM (free) or OpenAI (optional).
 """
+import json
 from typing import List, Tuple
 
 from loguru import logger
-from openai import AsyncOpenAI
 
-from config import settings
 from ingestion.metadata_schema import LegalChunkMetadata
+from llm_client import chat_complete
 
 
 _SYSTEM_PROMPT = """\
@@ -27,7 +26,7 @@ FORMAT YOUR RESPONSE:
 - Answer in clear paragraphs with inline citation numbers [1], [2], etc.
 - After your answer, list citations as:
   [1] Case Name / Statute Title — Citation — Court — Date — URL
-- End with the disclaimer: "⚠️ This is not legal advice. Consult a licensed attorney for advice on your specific situation."
+- End with: "⚠️ This is not legal advice. Consult a licensed attorney for advice on your specific situation."
 """
 
 _USER_PROMPT_TEMPLATE = """\
@@ -36,18 +35,15 @@ Question: {query}
 Legal Sources:
 {context}
 
-Instructions: Answer the question using ONLY the above sources. Cite every claim.
+Instructions: Answer the question using ONLY the above sources. Cite every claim with [N].
 """
 
 
 class AnswerGenerator:
     """
-    Generates citation-grounded legal answers using GPT-4o-mini.
-    Strict prompt engineering prevents hallucination.
+    Generates citation-grounded legal answers.
+    Uses Ollama (free, local) by default; OpenAI if key is configured.
     """
-
-    def __init__(self):
-        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
 
     async def generate(
         self,
@@ -56,14 +52,7 @@ class AnswerGenerator:
     ) -> dict:
         """
         Generate a citation-grounded answer.
-        
-        Returns:
-            {
-              "answer": "...",
-              "citations": [...],
-              "has_answer": True/False,
-              "uncertainty": "low" | "medium" | "high"
-            }
+        Returns: { answer, citations, has_answer, uncertainty }
         """
         if not chunks:
             return {
@@ -78,7 +67,7 @@ class AnswerGenerator:
                 "uncertainty": "high",
             }
 
-        # Build numbered context block
+        # Build numbered context
         context_parts = []
         citation_list = []
 
@@ -107,8 +96,7 @@ class AnswerGenerator:
         user_prompt = _USER_PROMPT_TEMPLATE.format(query=query, context=context_str)
 
         try:
-            resp = await self.client.chat.completions.create(
-                model=settings.openai_chat_model,
+            answer_text = await chat_complete(
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
@@ -116,9 +104,7 @@ class AnswerGenerator:
                 temperature=0.1,
                 max_tokens=1500,
             )
-            answer_text = resp.choices[0].message.content.strip()
 
-            # Detect uncertainty level based on hedging language in answer
             uncertainty = _estimate_uncertainty(answer_text, chunks)
 
             return {
@@ -132,7 +118,8 @@ class AnswerGenerator:
             logger.error(f"Answer generation failed: {e}")
             return {
                 "answer": (
-                    f"An error occurred while generating the answer: {e}\n\n"
+                    f"An error occurred while generating the answer. "
+                    f"Make sure Ollama is running: `ollama serve`\n\nError: {e}\n\n"
                     "⚠️ This is not legal advice."
                 ),
                 "citations": citation_list,
@@ -142,12 +129,6 @@ class AnswerGenerator:
 
 
 def _estimate_uncertainty(answer: str, chunks: List[Tuple[LegalChunkMetadata, float]]) -> str:
-    """
-    Heuristic uncertainty estimation:
-    - high: answer says "cannot be found" or no citations referenced
-    - medium: low relevance scores or hedging language
-    - low: high scores and direct citations
-    """
     lower = answer.lower()
     if any(phrase in lower for phrase in [
         "not contain", "insufficient", "cannot answer", "no relevant", "unclear"

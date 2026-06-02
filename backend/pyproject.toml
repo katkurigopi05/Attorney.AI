@@ -27,10 +27,11 @@ dependencies = [
     "llama-index>=0.10.40",
     "llama-index-llms-openai>=0.1.22",
     "llama-index-embeddings-openai>=0.1.10",
-    "llama-index-vector-stores-qdrant>=0.2.8",
+    "llama-index-vector-stores-qdrant>=0.1.2",
 
-    # ── Vector Database ───────────────────────────────────
-    "qdrant-client>=1.9.0",
+    # ── Vector Database (Supabase pgvector, FREE) ─────────────────────
+    "supabase>=2.5.0",
+    "postgrest>=0.16.0",
 
     # ── BM25 / Keyword Search ────────────────────────────
     "rank-bm25>=0.2.2",

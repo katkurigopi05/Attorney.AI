@@ -1,63 +1,54 @@
 """
-Attorney.AI — Citation Verifier & Hallucination Guard
-Every factual claim in the generated answer must map to a retrieved citation.
-Rejects or flags answers containing unsupported claims.
+Attorney.AI — Citation Verifier & Hallucination Guard (Ollama / free)
+Checks that every claim in the answer is supported by cited sources.
+Uses Ollama (local, free) — no API key required.
 """
+import json
 import re
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 from loguru import logger
-from openai import AsyncOpenAI
 
-from config import settings
 from ingestion.metadata_schema import LegalChunkMetadata
+from llm_client import chat_complete
 
 
 _VERIFY_PROMPT = """\
-You are a legal citation verifier. Your job is to check whether the claims in the generated answer are supported by the provided source texts.
+You are a legal citation verifier. Check whether the answer's claims are supported by the provided sources.
 
-For each factual claim in the answer that references a citation [N]:
-1. Check whether the cited source text actually supports that claim.
-2. Mark it as: "SUPPORTED", "PARTIALLY_SUPPORTED", or "UNSUPPORTED"
+For each factual claim that references a citation [N], determine:
+- SUPPORTED: source clearly supports the claim
+- PARTIALLY_SUPPORTED: source is related but not fully clear
+- UNSUPPORTED: source does not support this claim
 
 Respond ONLY with valid JSON:
 {
   "verification_results": [
-    {
-      "claim": "short claim text",
-      "citation_index": 1,
-      "status": "SUPPORTED" | "PARTIALLY_SUPPORTED" | "UNSUPPORTED",
-      "reason": "brief explanation"
-    }
+    {"claim": "...", "citation_index": 1, "status": "SUPPORTED", "reason": "..."}
   ],
-  "overall_faithfulness": "HIGH" | "MEDIUM" | "LOW",
+  "overall_faithfulness": "HIGH",
   "unsupported_count": 0,
-  "verdict": "PASS" | "FLAG" | "REJECT"
+  "verdict": "PASS"
 }
 
 Verdict rules:
-- PASS: All claims SUPPORTED, faithfulness HIGH
-- FLAG: Some PARTIALLY_SUPPORTED, warn user but allow
-- REJECT: Any UNSUPPORTED claims → answer must be revised
+- PASS: all claims SUPPORTED
+- FLAG: some PARTIALLY_SUPPORTED  
+- REJECT: any UNSUPPORTED
 
-Answer to verify:
-{answer}
+Answer: {answer}
 
-Source texts:
+Sources:
 {sources}
 """
 
 
 class CitationVerifier:
     """
-    Hallucination guard that verifies every cited claim in the generated answer
-    against the actual retrieved source texts.
-    
+    Hallucination guard using Ollama (free, local).
+    Verifies every cited claim against retrieved source texts.
     Verdict: PASS | FLAG | REJECT
     """
-
-    def __init__(self):
-        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
 
     async def verify(
         self,
@@ -66,80 +57,80 @@ class CitationVerifier:
     ) -> dict:
         """
         Verify citation faithfulness.
-        
-        Returns:
-            {
-              "verdict": "PASS" | "FLAG" | "REJECT",
-              "overall_faithfulness": "HIGH" | "MEDIUM" | "LOW",
-              "verification_results": [...],
-              "unsupported_count": int,
-              "verified_answer": str  # cleaned answer if needed
-            }
+        Returns verdict, faithfulness, and verified_answer.
         """
         if not chunks:
-            return {
-                "verdict": "FLAG",
-                "overall_faithfulness": "LOW",
-                "verification_results": [],
-                "unsupported_count": 0,
-                "verified_answer": answer,
-            }
+            return _default_result(answer, "FLAG", "LOW")
 
-        # Build numbered source texts for the verifier
+        # Quick check: does the answer even have citation markers?
+        if not self.quick_citation_check(answer, len(chunks)):
+            logger.warning("Answer has no citation markers — flagging")
+            flagged = (
+                "⚠️ **Note**: This answer may lack explicit citations. "
+                "Please verify claims independently.\n\n" + answer
+            )
+            return _default_result(flagged, "FLAG", "MEDIUM")
+
         sources_str = "\n\n".join([
-            f"[{i}] {chunk.title}\n{chunk.text[:600]}"
+            f"[{i}] {chunk.title}\n{chunk.text[:500]}"
             for i, (chunk, _) in enumerate(chunks, start=1)
         ])
 
-        prompt = _VERIFY_PROMPT.format(answer=answer[:3000], sources=sources_str[:6000])
+        prompt = _VERIFY_PROMPT.format(
+            answer=answer[:2000],
+            sources=sources_str[:4000],
+        )
 
         try:
-            resp = await self.client.chat.completions.create(
-                model=settings.openai_chat_model,
+            raw = await chat_complete(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
-                response_format={"type": "json_object"},
-                max_tokens=800,
+                max_tokens=600,
+                json_mode=True,
             )
-            import json
-            result = json.loads(resp.choices[0].message.content)
+            result = _extract_json(raw)
             result["verified_answer"] = answer
 
             verdict = result.get("verdict", "FLAG")
-            faithfulness = result.get("overall_faithfulness", "MEDIUM")
-            unsupported = result.get("unsupported_count", 0)
+            if verdict == "REJECT":
+                result["verified_answer"] = (
+                    "⚠️ **Warning**: This answer may contain unsupported claims. "
+                    "Please verify independently.\n\n" + answer
+                )
 
             logger.info(
                 f"Citation verification: verdict={verdict}, "
-                f"faithfulness={faithfulness}, unsupported={unsupported}"
+                f"faithfulness={result.get('overall_faithfulness')}"
             )
-
-            # If REJECT, add a warning prefix to the answer
-            if verdict == "REJECT":
-                result["verified_answer"] = (
-                    "⚠️ **Warning**: This answer may contain claims not fully supported "
-                    "by the retrieved sources. Please verify independently.\n\n" + answer
-                )
-
             return result
 
         except Exception as e:
             logger.error(f"Verifier failed: {e}")
-            return {
-                "verdict": "FLAG",
-                "overall_faithfulness": "MEDIUM",
-                "verification_results": [],
-                "unsupported_count": 0,
-                "verified_answer": answer,
-            }
+            return _default_result(answer, "FLAG", "MEDIUM")
 
     def quick_citation_check(self, answer: str, num_chunks: int) -> bool:
-        """
-        Fast pre-check: does the answer contain at least one [N] citation?
-        Returns True if citation markers found, False if answer has no citations.
-        """
-        citation_pattern = re.compile(r"\[\d+\]")
-        found = citation_pattern.findall(answer)
+        """Fast check: does the answer contain at least one [N] citation?"""
+        found = re.findall(r'\[\d+\]', answer)
         referenced = {int(m[1:-1]) for m in found}
         valid = {i for i in referenced if 1 <= i <= num_chunks}
         return len(valid) > 0
+
+
+def _default_result(answer: str, verdict: str, faithfulness: str) -> dict:
+    return {
+        "verdict": verdict,
+        "overall_faithfulness": faithfulness,
+        "verification_results": [],
+        "unsupported_count": 0,
+        "verified_answer": answer,
+    }
+
+
+def _extract_json(text: str) -> dict:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+        raise ValueError("No JSON found in verifier response")

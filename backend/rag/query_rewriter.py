@@ -1,73 +1,62 @@
 """
-Attorney.AI — Legal Query Rewriter
-Expands natural language questions into structured legal search queries.
+Attorney.AI — Legal Query Rewriter (Ollama / free)
+Expands natural language questions into optimized legal search queries.
+Uses Ollama (local, free) — no API key required.
 """
 import json
+import re
 from typing import List
 
 from loguru import logger
-from openai import AsyncOpenAI
 
-from config import settings
+from llm_client import chat_complete
 
 
 _REWRITE_PROMPT = """\
-You are a legal research expert helping rewrite a user's question into optimized search queries.
+You are a legal research expert. Rewrite this legal question into better search queries.
 
-Given the user's question and its classification, produce:
-1. A rewritten primary query optimized for legal document retrieval (clear, precise)
-2. 2-3 alternative search queries covering different phrasings or related legal concepts
-3. Key legal terms to emphasize (statute numbers, legal doctrine names, key terms)
+Given the question and context, provide:
+1. A rewritten primary query (clear, precise legal phrasing)
+2. 2 alternative queries with different phrasings
+3. Key legal terms to search for (statute numbers, doctrine names, etc.)
 
-Respond ONLY with valid JSON:
+Respond ONLY with valid JSON in this exact format:
 {
   "primary_query": "...",
   "alternative_queries": ["...", "..."],
   "key_legal_terms": ["...", "..."],
-  "suggested_citation_format": "e.g. 42 U.S.C. § 1983 or Miranda v. Arizona"
+  "suggested_citation_format": "..."
 }
 
-User question: {query}
+Question: {query}
 Task type: {task_type}
 Jurisdiction: {jurisdiction}
-Practice area: {practice_area}
 """
 
 
 class QueryRewriter:
     """
     Rewrites user queries into legal-optimized search queries.
-    Produces a primary query + alternatives to maximize recall.
+    Uses Ollama (local, free) — no paid API needed.
     """
 
-    def __init__(self):
-        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
-
-    async def rewrite(
-        self,
-        query: str,
-        classification: dict,
-    ) -> dict:
-        """
-        Expand and refine the query for legal retrieval.
-        Returns dict with primary_query, alternative_queries, key_legal_terms.
-        """
+    async def rewrite(self, query: str, classification: dict) -> dict:
+        """Expand and refine the query for legal retrieval."""
         prompt = _REWRITE_PROMPT.format(
             query=query,
             task_type=classification.get("task_type", "general"),
             jurisdiction=classification.get("jurisdiction", "US-Federal"),
-            practice_area=classification.get("practice_area", "Unknown"),
         )
 
         try:
-            resp = await self.client.chat.completions.create(
-                model=settings.openai_chat_model,
+            raw = await chat_complete(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                response_format={"type": "json_object"},
                 max_tokens=400,
+                json_mode=True,
             )
-            result = json.loads(resp.choices[0].message.content)
+            # Extract JSON even if model adds extra text
+            result = _extract_json(raw)
             logger.debug(f"Query rewritten: primary='{result.get('primary_query')}'")
             return result
         except Exception as e:
@@ -84,3 +73,20 @@ class QueryRewriter:
         queries = [rewrite_result.get("primary_query", "")]
         queries += rewrite_result.get("alternative_queries", [])
         return [q for q in queries if q]
+
+
+def _extract_json(text: str) -> dict:
+    """Extract JSON object from text, even if surrounded by prose."""
+    # Try direct parse first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # Try to find JSON block
+    match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+    raise ValueError(f"Could not parse JSON from: {text[:200]}")

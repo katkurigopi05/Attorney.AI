@@ -1,6 +1,13 @@
 """
 Attorney.AI — Centralized Configuration
 Reads from environment variables / .env file.
+
+Default mode: 100% local & free
+  - Ollama for LLM generation
+  - BGE-large for embeddings (local sentence-transformers)
+  - Qdrant local (Docker) for vector search
+  - rank-bm25 for keyword search
+  - HuggingFace models for NER, NLI, summarization
 """
 from functools import lru_cache
 from typing import List
@@ -24,23 +31,37 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     cors_origins: List[str] = Field(default=["http://localhost:5173", "http://localhost:3000"])
 
-    # ── OpenAI ───────────────────────────────────────────
-    openai_api_key: str = Field(default="")
+    # ── Ollama (local, FREE) ──────────────────────────────
+    ollama_base_url: str = Field(default="http://localhost:11434")
+    ollama_model: str = Field(default="llama3.1")   # Change to mistral/phi3/qwen2.5 etc.
+
+    # ── OpenAI (OPTIONAL — only used if key is present) ───
+    openai_api_key: str = Field(default="")          # Leave blank to use Ollama
     openai_embedding_model: str = Field(default="text-embedding-3-large")
     openai_chat_model: str = Field(default="gpt-4o-mini")
 
-    # ── Anthropic ─────────────────────────────────────────
-    anthropic_api_key: str = Field(default="")
+    # ── Embedding Backend ─────────────────────────────────
+    # "local"  → BGE-large-en-v1.5 (free, ~1.2GB download once)
+    # "openai" → OpenAI text-embedding-3-large (paid, needs key)
+    embedding_backend: str = Field(default="local")
+    local_embedding_model: str = Field(default="bge-large")  # see local_embedder.py registry
 
-    # ── Qdrant ───────────────────────────────────────────
-    qdrant_url: str = Field(default="http://localhost:6333")
-    qdrant_api_key: str = Field(default="")
-    qdrant_collection: str = Field(default="attorney_ai_legal")
+    # ── Supabase (FREE tier, pgvector + FTS) ────────────────
+    # Get these from: https://supabase.com → Project Settings → API
+    supabase_url: str = Field(default="")            # https://xxxx.supabase.co
+    supabase_service_key: str = Field(default="")    # service_role key (not anon)
+    supabase_table: str = Field(default="legal_chunks")
+    # Embedding dimension — must match your chosen model:
+    #   BGE-large-en-v1.5  → 1024
+    #   legal-bert          → 768
+    #   MiniLM-L6-v2        → 384
+    #   OpenAI 3-large      → 3072
+    embedding_dim: int = Field(default=1024)
 
-    # ── Legal APIs ───────────────────────────────────────
-    courtlistener_api_key: str = Field(default="")
+    # ── Legal APIs (all FREE, no key needed except CourtListener) ────────
+    courtlistener_api_key: str = Field(default="")   # Optional; unauthenticated is rate-limited
     courtlistener_base_url: str = Field(default="https://www.courtlistener.com/api/rest/v4")
-    govinfo_api_key: str = Field(default="")
+    govinfo_api_key: str = Field(default="")         # Optional; most endpoints are open
     govinfo_base_url: str = Field(default="https://api.govinfo.gov")
     ecfr_base_url: str = Field(default="https://www.ecfr.gov/api/versioner/v1")
     federal_register_base_url: str = Field(default="https://www.federalregister.gov/api/v1")
@@ -53,12 +74,28 @@ class Settings(BaseSettings):
     top_k_rerank: int = Field(default=5)
     reranker_model: str = Field(default="cross-encoder/ms-marco-MiniLM-L-12-v2")
 
-    # ── Elasticsearch (BM25) ─────────────────────────────
+    # ── HuggingFace Transformer Models (all FREE) ─────────
+    ner_model: str = Field(default="dslim/bert-base-NER")
+    nli_model: str = Field(default="cross-encoder/nli-deberta-v3-base")
+    summarizer_model: str = Field(default="nsi319/legal-led-base-16384")
+    classifier_model: str = Field(default="facebook/bart-large-mnli")
+
+    # ── Elasticsearch (optional BM25 alternative) ─────────
     elasticsearch_url: str = Field(default="http://localhost:9200")
     elasticsearch_index: str = Field(default="attorney_ai_bm25")
 
     # ── Evaluation ───────────────────────────────────────
     legalbench_rag_path: str = Field(default="./data/legalbench_rag")
+
+    @property
+    def using_ollama(self) -> bool:
+        """True if Ollama is the active LLM backend."""
+        return not (self.openai_api_key and self.openai_api_key.startswith("sk-"))
+
+    @property
+    def using_local_embeddings(self) -> bool:
+        """True if local embeddings are active."""
+        return self.embedding_backend == "local" or not self.using_ollama is False
 
 
 @lru_cache(maxsize=1)
